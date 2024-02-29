@@ -16,7 +16,8 @@ use nix::{
 };
 use std::ptr;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    fs::File,
+    io::{unix::AsyncFd, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Interest},
     net::{TcpListener, TcpStream},
 };
 
@@ -27,81 +28,44 @@ pub async fn run_server() {
         nix::unistd::ForkResult::Parent { child } => {
             let mut listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
             println!("Inside parent!");
-
-            // loop {
             let (mut socket, _) = listener.accept().await.unwrap();
             println!("Listener accepted");
 
-            fcntl(socket.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
+            // fcntl(socket.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
+            let mut master_reader = File::from(std::fs::File::from(res.master));
+            // let mut master_writer = master_reader.try_clone().await.unwrap();
+            println!("kobe");
 
             let (mut socket_reader, mut socket_writer) = socket.split();
 
-            fcntl(master_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
-
+            socket_writer.write("foo".as_bytes()).await.unwrap();
+            let mut buf = vec![0; 1024];
+            let mut buf2 = vec![0; 1024];
+            println!("YO?");
             loop {
-                println!("Inside second loop");
-                let mut buf = vec![0; 1024];
-                let n = socket_reader
-                    .read(&mut buf)
-                    .await
-                    .expect("failed to read data from socket");
-
-                if n == 0 {
-                    break;
-                } else {
-                    println!("Read from socket, writing into master: {}", n);
+                println!("Looping");
+                tokio::select! {
+                    Ok(n) = socket_reader.read(&mut buf) => {
+                        println!("Reading");
+                        if n == 0 {
+                            println!("BREAK");
+                            continue;
+                        } else {
+                            println!("Read from socket, writing into master: {}", n);
+                        }
+                    }
+                    Ok(n) =  master_reader.read(&mut buf2) => {
+                        println!("Writing");
+                        if n == 0 {
+                            println!("Breaking from loop");
+                            continue;
+                        } else {
+                            println!("Writing N into socket: {}", n);
+                            socket_writer.write(&buf[..n]).await.unwrap();
+                        }
+                    }
                 }
-                println!("Buffer: {:?}", &buf[..n]);
-                // write to master fd
-                write(res.master.as_raw_fd(), &buf[..n]).unwrap();
             }
-            // loop {
-            //     println!("Big loop");
-            //     // Read from master and forward to socket.
-            //     // What's read from master is the stdout from the shell program.
-            //     loop {
-            //         let mut buf = vec![0; 1024];
-
-            //         match read(master_fd, &mut buf) {
-            //             Ok(n) => {
-            //                 if n == 0 {
-            //                     println!("Breaking from loop");
-            //                     break;
-            //                 } else {
-            //                     println!("Read N: {}", n);
-            //                     socket_writer.write(&buf[..n]).await.unwrap();
-            //                 }
-            //             }
-            //             Err(e) => {
-            //                 if e != Errno::EAGAIN {
-            //                     panic!("Unexpected Error reading: {}", e);
-            //                 }
-            //             }
-            //         };
-            //     }
-
-            //     // In a loop, read data from the socket and write the data back.
-            //     // What's written to the socket will be routed to stdin of the shell
-            //     // program.
-            //     loop {
-            //         println!("Inside second loop");
-            //         let mut buf = vec![0; 1024];
-            //         let n = socket_reader
-            //             .read(&mut buf)
-            //             .await
-            //             .expect("failed to read data from socket");
-
-            //         if n == 0 {
-            //             break;
-            //         } else {
-            //             println!("Read from socket, writing into master: {}", n);
-            //         }
-            //         println!("Buffer: {:?}", &buf[..n]);
-            //         // write to master fd
-            //         write(res.master.as_raw_fd(), &buf[..n]).unwrap();
-            //     }
-            // }
-            // }
         }
         nix::unistd::ForkResult::Child => {
             let cstr = CString::new("/bin/bash").unwrap();
