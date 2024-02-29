@@ -1,47 +1,30 @@
-use std::{
-    convert::Infallible,
-    ffi::CString,
-    io::{self, Read, Write},
-    os::fd::AsRawFd,
-    ptr::NonNull,
-    sync::Arc,
-    thread::spawn,
-};
+use std::ffi::CString;
 
 use nix::{
-    errno::Errno,
-    fcntl::{self, fcntl, FcntlArg, OFlag},
-    pty::{forkpty, openpty},
-    unistd::{execvp, read, write},
+    pty::forkpty,
+    unistd::{execve, execvp},
 };
-use std::ptr;
 use tokio::{
     fs::File,
-    io::{unix::AsyncFd, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Interest},
-    net::{TcpListener, TcpStream},
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
 };
 
 pub async fn run_server() {
     let res = unsafe { forkpty(None, None) }.unwrap();
-    let master_fd = res.master.as_raw_fd();
     match res.fork_result {
-        nix::unistd::ForkResult::Parent { child } => {
-            let mut listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
-            println!("Inside parent!");
+        nix::unistd::ForkResult::Parent { child: _ } => loop {
+            let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
             let (mut socket, _) = listener.accept().await.unwrap();
-            println!("Listener accepted");
+            println!("New TCP Connection Established");
 
-            // fcntl(socket.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
             let mut master_reader = File::from(std::fs::File::from(res.master));
             let mut master_writer = master_reader.try_clone().await.unwrap();
-            println!("kobe");
 
             let (mut socket_reader, mut socket_writer) = socket.split();
 
-            socket_writer.write("foo".as_bytes()).await.unwrap();
             let mut buf = vec![0; 1024];
             let mut buf2 = vec![0; 1024];
-            println!("YO?");
             loop {
                 println!("Looping");
 
@@ -64,16 +47,22 @@ pub async fn run_server() {
                             println!("Breaking from loop");
                             continue;
                         } else {
-                            println!("Writing N into socket: {}", n);
                             let s = String::from_utf8_lossy(&buf2[..n]);
-                            println!("Writing to socket: {}", s);
+                            println!("Writing to socket: {}\n", s);
                             socket_writer.write(&buf2[..n]).await.unwrap();
                         }
                     }
                 }
             }
-        }
+        },
         nix::unistd::ForkResult::Child => {
+            let echo = CString::new("echo").unwrap();
+            let param = CString::new("\"PS1='MyCustomPrompt> '\"").unwrap();
+
+            let command = CString::new("--rcfile <(echo \"PS1='MyCustomPrompt> '\")").unwrap();
+            let rc_file = CString::new("--rcfile").unwrap();
+            let lol = CString::new("<(echo \"PS1='MyCustomPrompt> '\")").unwrap();
+
             let cstr = CString::new("/bin/bash").unwrap();
             execvp(&cstr, &[&cstr]).unwrap();
             println!("Child process - Finished bash");
