@@ -20,7 +20,6 @@ use termion::raw::IntoRawMode;
 pub async fn run_client() {
     println!("I'm the client");
     let mut stream = std::net::TcpStream::connect("127.0.0.1:8080").unwrap();
-    stream.write("YOO it's the client".as_bytes()).unwrap();
 
     // stream.write("ls\n".as_bytes()).unwrap();
     // // let mut master_fd = -1;
@@ -30,9 +29,21 @@ pub async fn run_client() {
     let mut stream2 = stream.try_clone().unwrap();
 
     tokio::spawn(async move {
-        let mut stdout = std::io::stdout().into_raw_mode().unwrap();
-        io::copy(std::io::Read::by_ref(&mut stream2), stdout.by_ref()).unwrap();
+        // let mut stdout = std::io::stdout().into_raw_mode().unwrap();
+        // io::copy(std::io::Read::by_ref(&mut stream2), stdout.by_ref()).unwrap();
+        loop {
+            let mut buf = vec![0; 1024];
+
+            let n = stream2.read(&mut buf).unwrap();
+            // println!("Read from socket: {:?} - {:?}", n, &buf);
+            if n > 0 {
+                // println!("Writing to client stdout");
+                std::io::stdout().write(&buf[..n]).unwrap();
+            }
+        }
     });
+    // let mut stdout = std::io::stdout().into_raw_mode().unwrap();
+
     io::copy(io::stdin().by_ref(), std::io::Write::by_ref(&mut stream)).unwrap();
 
     // let res = unsafe { forkpty(None, None) }.unwrap();

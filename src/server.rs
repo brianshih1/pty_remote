@@ -33,7 +33,7 @@ pub async fn run_server() {
 
             // fcntl(socket.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
             let mut master_reader = File::from(std::fs::File::from(res.master));
-            // let mut master_writer = master_reader.try_clone().await.unwrap();
+            let mut master_writer = master_reader.try_clone().await.unwrap();
             println!("kobe");
 
             let (mut socket_reader, mut socket_writer) = socket.split();
@@ -44,6 +44,7 @@ pub async fn run_server() {
             println!("YO?");
             loop {
                 println!("Looping");
+
                 tokio::select! {
                     Ok(n) = socket_reader.read(&mut buf) => {
                         println!("Reading");
@@ -52,6 +53,9 @@ pub async fn run_server() {
                             continue;
                         } else {
                             println!("Read from socket, writing into master: {}", n);
+                            let s = String::from_utf8_lossy(&buf[..n]);
+                            println!("Writing to master: {}", s);
+                            master_writer.write(&mut buf[..n]).await.unwrap();
                         }
                     }
                     Ok(n) =  master_reader.read(&mut buf2) => {
@@ -61,7 +65,9 @@ pub async fn run_server() {
                             continue;
                         } else {
                             println!("Writing N into socket: {}", n);
-                            socket_writer.write(&buf[..n]).await.unwrap();
+                            let s = String::from_utf8_lossy(&buf2[..n]);
+                            println!("Writing to socket: {}", s);
+                            socket_writer.write(&buf2[..n]).await.unwrap();
                         }
                     }
                 }
@@ -70,6 +76,7 @@ pub async fn run_server() {
         nix::unistd::ForkResult::Child => {
             let cstr = CString::new("/bin/bash").unwrap();
             execvp(&cstr, &[&cstr]).unwrap();
+            println!("Child process - Finished bash");
             std::process::exit(1);
         }
     }
