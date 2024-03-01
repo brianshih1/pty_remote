@@ -1,9 +1,6 @@
 use std::ffi::CString;
 
-use nix::{
-    pty::forkpty,
-    unistd::{execve, execvp},
-};
+use nix::{pty::forkpty, unistd::execvp};
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -68,7 +65,7 @@ pub async fn run_server() {
                         if cache_ref.len() > 0 {
                             stream_writer.write(&cache_ref.clone()).await.unwrap();
                         }
-                        let (bash_stdout_sender, mut bash_stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+                        let (bash_stdout_sender, bash_stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
                         sockets.push(bash_stdout_sender);
 
                         tokio::spawn(async move {
@@ -76,14 +73,12 @@ pub async fn run_server() {
                         });
                     }
                     Some(data) = receiver.recv() => {
-                        let s = String::from_utf8_lossy(&data);
-                        log::debug!("Writing into PTY master -> bash: {}", s);
+                        log::debug!("Writing into PTY master -> bash: {}", String::from_utf8_lossy(&data));
                         master_writer.write(&data).await.unwrap();
                         master_writer.flush().await.unwrap();
                     }
-                    Ok(n) =  master_reader.read(&mut buf) => {
-                        let s = String::from_utf8_lossy(&buf[..n]);
-                        println!("Received stdout from bash, forwarding to sockets: {}", s);
+                    Ok(n) = master_reader.read(&mut buf) => {
+                        log::debug!("Received stdout from bash, forwarding to sockets: {}", String::from_utf8_lossy(&buf[..n]));
                         println!("BUffer: {:?}", &buf[..n]);
                         println!("b: {:?}", n);
 
@@ -103,7 +98,6 @@ pub async fn run_server() {
                         // newly joined clients will receive the characters since
                         // the last "enter"
                         if n >= 2 && buf[0] == 13 && buf[1] == 10 {
-                            println!("ENTERRR");
                             cache = vec![];
                         } else {
                             cache.extend_from_slice(&buf[..n]);
@@ -115,6 +109,8 @@ pub async fn run_server() {
         },
         nix::unistd::ForkResult::Child => {
             let cstr = CString::new("/bin/bash").unwrap();
+            // TODO: Generate Bash Prompt, e.g.
+            // /bin/bash --rcfile <(echo "PS1='MyCustomPrompt> '")
             execvp(&cstr, &[&cstr]).unwrap();
             std::process::exit(1);
         }
