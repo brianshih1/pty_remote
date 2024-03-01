@@ -49,17 +49,14 @@ pub async fn run_server() {
             let mut master_reader = File::from(std::fs::File::from(res.master));
             let mut master_writer = master_reader.try_clone().await.unwrap();
 
-            // let (mut socket_reader, mut socket_writer) = socket.split();
-
             // Senders are the sockets
             // Reciever takes data from sockets (stdin from clients) and writes it to the PTY master
             // to propagate that to the PTY slave (bash program)
             let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(1048);
 
+            let mut sockets: Vec<Sender<Vec<u8>>> = Vec::new();
             let mut buf = vec![0; 1024];
             let mut buf2 = vec![0; 1024];
-
-            let mut sockets: Vec<Sender<Vec<u8>>> = Vec::new();
             loop {
                 println!("Looping");
                 tokio::select! {
@@ -74,7 +71,8 @@ pub async fn run_server() {
                             loop {
                                 tokio::select! {
                                     Ok(n) = stream_reader.read(&mut buf) => {
-                                        println!("Read from TCP socket!");
+                                        let s = String::from_utf8_lossy(&buf[..n]);
+                                        println!("Read from TCP socket! Sending: {}", s);
                                         sender.send(Vec::from(&buf[..n])).await.unwrap();
                                     }
                                     Some(data) = bash_stdout_rx.recv() => {
@@ -86,8 +84,9 @@ pub async fn run_server() {
                         });
                     }
                     Some(foo) = receiver.recv() => {
-                        println!("writing into PTY master -> bash");
-                        master_writer.write(&mut buf[..foo.len()]).await.unwrap();
+                        let s = String::from_utf8_lossy(&foo);
+                        println!("Writing into PTY master -> bash: {}", s);
+                        master_writer.write(&foo).await.unwrap();
                         master_writer.flush().await.unwrap();
                     }
                     Ok(n) =  master_reader.read(&mut buf2) => {
@@ -97,32 +96,6 @@ pub async fn run_server() {
                             sender.send(Vec::from(&buf2[..n])).await.unwrap();
                         }
                     }
-                    // Ok(n) = socket_reader.read(&mut buf) => {
-                    //     println!("Reading");
-                    //     if n == 0 {
-                    //         println!("BREAK");
-                    //         continue;
-                    //     } else {
-
-                    //         println!("Read from socket, writing into master: {}", n);
-                    //         let s = String::from_utf8_lossy(&buf[..n]);
-                    //         println!("Writing to master: {}", s);
-                    //         master_writer.write(&mut buf[..n]).await.unwrap();
-                    //         master_writer.flush().await.unwrap();
-                    //     }
-                    // }
-                    // Ok(n) =  master_reader.read(&mut buf2) => {
-                    //     println!("Writing");
-                    //     if n == 0 {
-                    //         println!("Breaking from loop");
-                    //         continue;
-                    //     } else {
-                    //         let s = String::from_utf8_lossy(&buf2[..n]);
-                    //         println!("Writing to socket: {}\n", s);
-                    //         socket_writer.write(&buf2[..n]).await.unwrap();
-                    //         socket_writer.flush().await.unwrap();
-                    //     }
-                    // }
                 }
             }
         },
