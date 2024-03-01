@@ -8,9 +8,12 @@ mod server;
 
 // Server: ./target/debug/pty_remote -s
 // Client: ./target/debug/pty_remote
+// For debug mode, do RUST_LOG=debug ./target/debug/pty_remote -s
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let matches = command!()
         .arg(arg!(
             -s --server ... "Runs as server"

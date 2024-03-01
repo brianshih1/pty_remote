@@ -1,8 +1,4 @@
-use std::{
-    ffi::CString,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    sync::mpsc,
-};
+use std::ffi::CString;
 
 use nix::{
     pty::forkpty,
@@ -11,40 +7,42 @@ use nix::{
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{tcp::ReadHalf, TcpListener, TcpStream},
-    sync::mpsc::Sender,
+    net::{TcpListener, TcpStream},
+    sync::mpsc::{Receiver, Sender},
 };
 
-struct Socket {
-    stream: TcpStream,
+async fn socket_listen(
+    mut stream: TcpStream,
+    mut bash_stdout_rx: Receiver<Vec<u8>>,
     sender: Sender<Vec<u8>>,
-}
+) {
+    let (mut stream_reader, mut stream_writer) = stream.split();
+    let mut buf = vec![0; 100];
 
-impl Socket {
-    pub async fn listen(&mut self) {
-        let mut reader = self.stream.split().0;
-        let mut buf = vec![0; 1024];
-
-        loop {
-            if let Ok(n) = reader.read(&mut buf).await {
-                if n > 0 {
-                    self.sender.send(Vec::from(&buf[..n])).await.unwrap();
-                }
+    loop {
+        tokio::select! {
+            Ok(n) = stream_reader.read(&mut buf) => {
+                let s = String::from_utf8_lossy(&buf[..n]);
+                log::debug!("Read from TCP socket! Sending: {}", s);
+                log::debug!("SLen: {}", s.len());
+                log::debug!("Buf: {:?}", &buf[..n]);
+                sender.send(Vec::from(&buf[..n])).await.unwrap();
+            }
+            Some(data) = bash_stdout_rx.recv() => {
+                log::debug!("Writing to socket!");
+                stream_writer.write(&data).await.unwrap();
+                stream_writer.flush().await.unwrap();
             }
         }
     }
 }
 
 pub async fn run_server() {
-    dbg!("foo");
-
     let res = unsafe { forkpty(None, None) }.unwrap();
 
     match res.fork_result {
         nix::unistd::ForkResult::Parent { child: _ } => loop {
             let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
-
-            println!("New TCP Connection Established");
 
             let mut master_reader = File::from(std::fs::File::from(res.master));
             let mut master_writer = master_reader.try_clone().await.unwrap();
@@ -56,60 +54,68 @@ pub async fn run_server() {
 
             let mut sockets: Vec<Sender<Vec<u8>>> = Vec::new();
             let mut buf = vec![0; 1024];
-            let mut buf2 = vec![0; 1024];
+
+            let mut cache: Vec<u8> = vec![];
+
+            // TODO: Deal with TCP connection disconnecting - need to remove it from sockets vec
             loop {
-                println!("Looping");
+                let cache_ref = cache.clone();
                 tokio::select! {
                     Ok((mut stream, _)) =  listener.accept() => {
-                        println!("Received socket");
+                        log::debug!("Established new TCP Connection");
                         let sender = sender.clone();
+                        let (_, mut stream_writer) = stream.split();
+                        if cache_ref.len() > 0 {
+                            stream_writer.write(&cache_ref.clone()).await.unwrap();
+                        }
                         let (bash_stdout_sender, mut bash_stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
                         sockets.push(bash_stdout_sender);
+
                         tokio::spawn(async move {
-                            let (mut stream_reader, mut stream_writer) = stream.split();
-                            let mut buf = vec![0; 1024];
-                            loop {
-                                tokio::select! {
-                                    Ok(n) = stream_reader.read(&mut buf) => {
-                                        let s = String::from_utf8_lossy(&buf[..n]);
-                                        println!("Read from TCP socket! Sending: {}", s);
-                                        sender.send(Vec::from(&buf[..n])).await.unwrap();
-                                    }
-                                    Some(data) = bash_stdout_rx.recv() => {
-                                        println!("Writing to socket!");
-                                        stream_writer.write(&data).await.unwrap();
-                                    }
-                                }
-                            }
+                            socket_listen(stream, bash_stdout_rx, sender.clone()).await;
                         });
                     }
-                    Some(foo) = receiver.recv() => {
-                        let s = String::from_utf8_lossy(&foo);
-                        println!("Writing into PTY master -> bash: {}", s);
-                        master_writer.write(&foo).await.unwrap();
+                    Some(data) = receiver.recv() => {
+                        let s = String::from_utf8_lossy(&data);
+                        log::debug!("Writing into PTY master -> bash: {}", s);
+                        master_writer.write(&data).await.unwrap();
                         master_writer.flush().await.unwrap();
                     }
-                    Ok(n) =  master_reader.read(&mut buf2) => {
-                        println!("Received stdout from bash, forwarding to sockets");
+                    Ok(n) =  master_reader.read(&mut buf) => {
+                        let s = String::from_utf8_lossy(&buf[..n]);
+                        println!("Received stdout from bash, forwarding to sockets: {}", s);
+                        println!("BUffer: {:?}", &buf[..n]);
+                        println!("b: {:?}", n);
+
+
                         for sender in sockets.iter() {
-                            println!("send bash stdout to socket");
-                            sender.send(Vec::from(&buf2[..n])).await.unwrap();
+                            log::debug!("send bash stdout to socket");
+                            match sender.send(Vec::from(&buf[..n])).await {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    log::debug!("Error with sending: {}", e);
+                                }
+                            }
                         }
+
+                        // This detects if it's an "enter". We want to preserve
+                        // anything user types before they hit enter so that
+                        // newly joined clients will receive the characters since
+                        // the last "enter"
+                        if n >= 2 && buf[0] == 13 && buf[1] == 10 {
+                            println!("ENTERRR");
+                            cache = vec![];
+                        } else {
+                            cache.extend_from_slice(&buf[..n]);
+                        }
+
                     }
                 }
             }
         },
         nix::unistd::ForkResult::Child => {
-            let echo = CString::new("echo").unwrap();
-            let param = CString::new("\"PS1='MyCustomPrompt> '\"").unwrap();
-
-            let command = CString::new("--rcfile <(echo \"PS1='MyCustomPrompt> '\")").unwrap();
-            let rc_file = CString::new("--rcfile").unwrap();
-            let lol = CString::new("<(echo \"PS1='MyCustomPrompt> '\")").unwrap();
-
             let cstr = CString::new("/bin/bash").unwrap();
             execvp(&cstr, &[&cstr]).unwrap();
-            println!("Child process - Finished bash");
             std::process::exit(1);
         }
     }
